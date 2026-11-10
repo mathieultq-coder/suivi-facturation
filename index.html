@@ -108,6 +108,8 @@
     border:1px solid var(--line);border-radius:5px;padding:4px 6px;background:#fff;color:var(--ink);
   }
   .days-input:focus{outline:none;border-color:var(--moss);}
+  .extra-cell button{background:none;border:1px solid var(--rust);color:var(--rust);border-radius:5px;padding:4px 10px;font-size:11px;font-family:var(--font-body);cursor:pointer;}
+  .extra-cell button:hover{background:var(--rust);color:#fff;}
   .client-cell{text-align:left !important;}
   thead th:nth-child(2){text-align:left;}
   .client-input{
@@ -168,8 +170,12 @@ const thisMonth = new Date().getMonth();
 
 const SUPABASE_URL = 'https://qbhvvlakzbspvkmqoooi.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_kE4-_1H-8Y2zI5phERgWkw_rfd4xAqm';
+let recoveryMode = /type=recovery/.test(window.location.hash);
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 let uid = null;
+let lastSaveError = '';
+let extras = [];
+const esc = v => String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
 
 function fmtEUR(n){
   return new Intl.NumberFormat('fr-FR', { style:'currency', currency:'EUR', maximumFractionDigits:0 }).format(n);
@@ -236,7 +242,7 @@ function joursOuvresMois(year, monthIdx){
 }
 
 async function loadAll(){
-  entries = {}; clients = {};
+  entries = {}; clients = {}; extras = [];
   const c = await sb.from('config').select('tjm, jours_max, client').maybeSingle();
   if (c.error) console.error('Erreur chargement config', c.error);
   else if (c.data) config = { tjm: Number(c.data.tjm), joursMax: Number(c.data.jours_max), client: c.data.client || '' };
@@ -247,6 +253,9 @@ async function loadAll(){
     entries[key] = Number(r.jours);
     if (r.client) clients[key] = r.client;
   });
+  const x = await sb.from('extras').select('id, year, month, label, jours, ca, client').order('created_at');
+  if (x.error) console.error('Erreur chargement extras', x.error);
+  else extras = (x.data || []).map(r => ({ id: r.id, year: r.year, month: r.month, label: r.label || '', jours: Number(r.jours), ca: Number(r.ca), client: r.client || '' }));
   if (typeof config.client !== 'string') config.client = '';
 }
 
@@ -256,6 +265,7 @@ async function saveConfig(client, tjm, joursMax){
     { user_id: uid, tjm, jours_max: joursMax, client, updated_at: new Date().toISOString() },
     { onConflict: 'user_id' });
   if (error) console.error('Erreur sauvegarde config', error);
+  lastSaveError = error ? (error.message || String(error)) : '';
   return !error;
 }
 
@@ -268,6 +278,7 @@ async function saveEntry(year, monthIdx, jours, client){
     const { error } = await sb.from('entries').delete()
       .eq('user_id', uid).eq('year', year).eq('month', monthIdx + 1);
     if (error) console.error('Erreur suppression saisie', error);
+    lastSaveError = error ? (error.message || String(error)) : '';
     return !error;
   }
   entries[key] = jours;
@@ -276,7 +287,28 @@ async function saveEntry(year, monthIdx, jours, client){
     { user_id: uid, year, month: monthIdx + 1, jours, client: clients[key] || '', updated_at: new Date().toISOString() },
     { onConflict: 'user_id,year,month' });
   if (error) console.error('Erreur sauvegarde saisie', error);
+  lastSaveError = error ? (error.message || String(error)) : '';
   return !error;
+}
+
+function extraCaMonth(year, monthIdx){
+  return extras.filter(x => x.year === year && x.month === monthIdx + 1).reduce((t, x) => t + x.ca, 0);
+}
+
+async function saveExtra(year, monthIdx, jours, ca, client){
+  const { data, error } = await sb.from('extras').insert(
+    { user_id: uid, year, month: monthIdx + 1, label: 'Extra', jours, ca, client: client || '' }
+  ).select('id').single();
+  if (error){ console.error('Erreur sauvegarde extra', error); lastSaveError = error.message || String(error); return false; }
+  extras = extras.concat([{ id: data.id, year, month: monthIdx + 1, label: 'Extra', jours, ca, client: client || '' }]);
+  return true;
+}
+
+async function deleteExtra(id){
+  const { error } = await sb.from('extras').delete().eq('id', id);
+  if (error){ console.error('Erreur suppression extra', error); lastSaveError = error.message || String(error); return false; }
+  extras = extras.filter(x => x.id !== id);
+  return true;
 }
 
 function yearStats(year){
@@ -288,21 +320,27 @@ function yearStats(year){
     if (j !== null){ jours += j; ca += j * config.tjm; }
     monthly.push(j);
   }
-  return { jours, ca, monthly };
+  const yearExtras = extras.filter(x => x.year === year);
+  const extraCa = yearExtras.reduce((t, x) => t + x.ca, 0);
+  const extraJours = yearExtras.reduce((t, x) => t + x.jours, 0);
+  return { jours, ca: ca + extraCa, monthly, extraCa, extraJours };
 }
 
 function exportExcel(year, stats){
   const rows = [['Mois', 'Jours', 'CA du mois (HT)', 'CA cumulé (HT)']];
   let cumul = 0;
   stats.monthly.forEach((v, i) => {
-    const caMois = v ? v * config.tjm : 0;
-    if (v) cumul += caMois;
-    rows.push([MOIS_LONG[i], v !== null ? v : '', v !== null ? caMois : '', v !== null ? cumul : '']);
+    const exCa = extraCaMonth(year, i);
+    const caMois = (v ? v * config.tjm : 0) + exCa;
+    cumul += caMois;
+    const shown = v !== null || exCa > 0;
+    rows.push([MOIS_LONG[i], v !== null ? v : '', shown ? caMois : '', shown ? cumul : '']);
   });
   rows.push([]);
   rows.push(['Client', config.client || '']);
   rows.push(['TJM (€ HT)', config.tjm]);
   rows.push(['Volume jour annuel max', config.joursMax]);
+  rows.push(['Jours d\'astreinte', stats.extraJours]);
   rows.push(['CA cumulé (HT)', stats.ca]);
   const ws = XLSX.utils.aoa_to_sheet(rows);
   const wb = XLSX.utils.book_new();
@@ -398,10 +436,10 @@ function openImportModal(parsed){
       <div class="field" style="margin-bottom:10px;"><label>Mois</label><select id="imp-month" style="width:100%;">${monthOptions}</select></div>
       <div class="field" style="margin-bottom:10px;"><label>Année</label><input id="imp-year" type="number" value="${parsed.year || currentYear}" style="width:100%;"></div>
       <div class="field" style="margin-bottom:10px;"><label>Nom du client</label><input id="imp-client" type="text" value="${(config.client || '').replace(/"/g, '&quot;')}" style="width:100%;"></div>
-      <div class="field" style="margin-bottom:10px;"><label>Jours facturés</label><input id="imp-jours" type="number" step="0.5" min="0" value="${parsed.jours !== null ? parsed.jours : ''}" style="width:100%;"></div>
-      <div style="font-size:12px;color:var(--ink-soft);margin-bottom:14px;line-height:1.4;">
-        CA détecté sur la facture : <b>${parsed.ca !== null ? fmtEUR(parsed.ca) : 'non détecté'}</b> (HT, indicatif — le CA du suivi reste calculé à partir du TJM)
-      </div>
+      <div class="field" style="margin-bottom:10px;"><label id="imp-jours-label">Jours facturés</label><input id="imp-jours" type="number" step="0.5" min="0" value="${parsed.jours !== null ? parsed.jours : ''}" style="width:100%;"></div>
+      <div class="field" style="margin-bottom:10px;"><label>CA HT de la facture</label><input id="imp-ca" type="number" step="0.01" min="0" value="${parsed.ca !== null ? parsed.ca : ''}" style="width:100%;"></div>
+      <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;margin-bottom:6px;cursor:pointer;"><input type="checkbox" id="imp-extra" style="margin-top:3px;width:auto;"><span><b>Extra</b> (astreinte, prestation exceptionnelle)</span></label>
+      <div style="font-size:11px;color:var(--ink-soft);margin-bottom:14px;line-height:1.4;">Sans « Extra » : le mois et les jours sont reportés (CA calculé au TJM). Avec « Extra » : le CA de la facture s'ajoute au mois, sans toucher aux jours facturés ni aux congés ; les jours comptent en astreinte.</div>
       <div style="display:flex;gap:10px;justify-content:flex-end;">
         <button id="imp-cancel" style="background:none;border:1px solid var(--ink);color:var(--ink);border-radius:6px;padding:7px 14px;cursor:pointer;font-family:var(--font-body);">Annuler</button>
         <button id="imp-confirm" style="background:var(--moss);color:#fff;border:none;border-radius:6px;padding:7px 14px;cursor:pointer;font-family:var(--font-body);">Reporter</button>
@@ -409,20 +447,32 @@ function openImportModal(parsed){
     </div>`;
   document.body.appendChild(overlay);
   document.getElementById('imp-cancel').onclick = () => overlay.remove();
+  document.getElementById('imp-extra').onchange = ev => {
+    document.getElementById('imp-jours-label').textContent = ev.target.checked ? "Jours d'astreinte (Qté)" : 'Jours facturés';
+  };
   document.getElementById('imp-confirm').onclick = async () => {
     const monthIdx = parseInt(document.getElementById('imp-month').value, 10);
     const year = parseInt(document.getElementById('imp-year').value, 10);
     const jours = parseFloat(document.getElementById('imp-jours').value);
     const client = document.getElementById('imp-client').value.trim();
+    const isExtra = document.getElementById('imp-extra').checked;
+    const ca = parseFloat(String(document.getElementById('imp-ca').value).replace(',', '.'));
     if (isNaN(year) || isNaN(jours) || jours < 0) return;
+    if (isExtra && (isNaN(ca) || ca < 0)){ document.getElementById('imp-ca').style.borderColor = 'var(--rust)'; return; }
     currentYear = year;
     overlay.remove();
-    const saving = saveEntry(year, monthIdx, jours, client);
-    render();
-    const ok = await saving;
+    let ok;
+    if (isExtra){
+      ok = await saveExtra(year, monthIdx, jours, ca, client);
+      render();
+    } else {
+      const saving = saveEntry(year, monthIdx, jours, client);
+      render();
+      ok = await saving;
+    }
     const status = document.getElementById('settings-status');
     if (status){
-      status.textContent = ok ? 'Facture reportée' : 'Reporté mais non sauvegardé (stockage indisponible)';
+      status.textContent = ok ? (isExtra ? 'Facture extra reportée' : 'Facture reportée') : 'Reporté mais non sauvegardé : ' + lastSaveError;
       status.style.color = ok ? '' : 'var(--rust)';
       setTimeout(() => { status.textContent = ''; }, 4000);
     }
@@ -464,19 +514,34 @@ function render(){
   const rowsHtml = stats.monthly.map((v, i) => {
     const key = monthKey(currentYear, i);
     const isFuture = currentYear === thisYear && i > thisMonth;
-    const caMois = v ? v * config.tjm : 0;
+    const exCa = extraCaMonth(currentYear, i);
+    const caMois = (v ? v * config.tjm : 0) + exCa;
+    const shown = v !== null || exCa > 0;
     let cumul = 0;
-    for (let k=0;k<=i;k++){ const vv = stats.monthly[k]; if (vv) cumul += vv * config.tjm; }
+    for (let k=0;k<=i;k++){ const vv = stats.monthly[k]; if (vv) cumul += vv * config.tjm; cumul += extraCaMonth(currentYear, k); }
     return `
       <tr class="${isFuture ? 'future' : ''}" data-idx="${i}">
         <td>${MOIS_LONG[i]}</td>
         <td class="client-cell"><input class="client-input" type="text" data-month="${i}" value="${(clients[key] || '').replace(/"/g, '&quot;')}" placeholder="—"></td>
         <td><input class="days-input" type="number" min="0" max="31" step="0.5" value="${v !== null ? v : ''}" data-month="${i}" placeholder="—"></td>
-        <td>${v !== null ? fmtEUR(caMois) : '—'}</td>
-        <td>${v !== null ? fmtEUR(cumul) : '—'}</td>
+        <td>${shown ? fmtEUR(caMois) : '—'}${exCa > 0 ? `<div style="font-size:10px;color:var(--ink-soft);">dont ${fmtEUR(exCa)} extra</div>` : ''}</td>
+        <td>${shown ? fmtEUR(cumul) : '—'}</td>
         <td class="save-cell"><button data-month="${i}">Enregistrer</button></td>
       </tr>`;
   }).join('');
+
+  const extrasList = extras.filter(x => x.year === currentYear).sort((a, b) => a.month - b.month);
+  const extrasPanel = extrasList.length ? `
+    <div class="panel" style="margin-top:24px;">
+      <h2>Factures extra ${currentYear}</h2>
+      <table>
+        <thead><tr><th>Mois</th><th>Client</th><th>Jours</th><th>CA (HT)</th><th></th></tr></thead>
+        <tbody>${extrasList.map(x => `
+          <tr><td>${MOIS_LONG[x.month - 1]}</td><td class="client-cell">${esc(x.client) || '—'}</td><td>${x.jours}</td><td>${fmtEUR(x.ca)}</td>
+          <td class="extra-cell"><button class="del-extra" data-id="${esc(x.id)}">Supprimer</button></td></tr>`).join('')}
+        </tbody>
+      </table>
+    </div>` : '';
 
   app.innerHTML = `
     <header class="top">
@@ -488,6 +553,7 @@ function render(){
         <button id="prev-year" aria-label="Année précédente">‹</button>
         <span class="year">${currentYear}</span>
         <button id="next-year" aria-label="Année suivante">›</button>
+        <button id="change-pwd" style="width:auto;padding:0 10px;font-family:var(--font-body);font-size:12px;margin-left:8px;">Mot de passe</button>
         <button id="logout" style="width:auto;padding:0 10px;font-family:var(--font-body);font-size:12px;margin-left:8px;">Déconnexion</button>
       </div>
     </header>
@@ -529,6 +595,10 @@ function render(){
       <div class="kpi">
         <div class="label">Congés à prendre</div>
         <div class="value accent">${congesAPrendre}</div>
+      </div>
+      <div class="kpi">
+        <div class="label">Jours d'astreinte</div>
+        <div class="value">${stats.extraJours}</div>
       </div>
     </div>
 
@@ -572,9 +642,19 @@ function render(){
         <tbody>${rowsHtml}</tbody>
       </table>
     </div>
+    ${extrasPanel}
   `;
 
   document.getElementById('logout').onclick = async () => { await sb.auth.signOut(); };
+  document.getElementById('change-pwd').onclick = () => renderNewPassword(true);
+  app.querySelectorAll('.del-extra').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('Supprimer cette facture extra ?')) return;
+      const ok = await deleteExtra(btn.dataset.id);
+      render();
+      if (!ok) alert('Non supprimé : ' + lastSaveError);
+    };
+  });
   document.getElementById('prev-year').onclick = () => { currentYear--; render(); };
   document.getElementById('next-year').onclick = () => { currentYear++; render(); };
 
@@ -582,9 +662,9 @@ function render(){
     const client = document.getElementById('client-input').value.trim();
     const tjm = parseFloat(document.getElementById('tjm-input').value) || 0;
     const max = parseFloat(document.getElementById('max-input').value) || 0;
-    await saveConfig(client, tjm, max);
+    const okCfg = await saveConfig(client, tjm, max);
     const status = document.getElementById('settings-status');
-    status.textContent = 'Enregistré';
+    status.textContent = okCfg ? 'Enregistré' : 'Non sauvegardé : ' + lastSaveError;
     setTimeout(() => { status.textContent = ''; }, 2000);
     render();
   };
@@ -622,8 +702,9 @@ function render(){
       const clientInput = app.querySelector(`.client-input[data-month="${m}"]`);
       let client = clientInput ? clientInput.value.trim() : '';
       if (client === '' && val !== null) client = config.client || '';
-      await saveEntry(currentYear, m, val, client);
+      const okRow = await saveEntry(currentYear, m, val, client);
       render();
+      if (!okRow) alert('Saisie non sauvegardée : ' + lastSaveError);
     };
   });
 }
@@ -636,16 +717,26 @@ function renderLogin(message){
       <div class="field" style="margin-bottom:10px;"><label for="lg-email">Email</label><input id="lg-email" type="email" autocomplete="username" style="width:100%;"></div>
       <div class="field" style="margin-bottom:14px;"><label for="lg-pass">Mot de passe</label><input id="lg-pass" type="password" autocomplete="current-password" style="width:100%;"></div>
       <button id="lg-btn" style="background:var(--moss);color:#fff;border:none;border-radius:6px;padding:9px 16px;cursor:pointer;font-family:var(--font-body);width:100%;">Se connecter</button>
+      <button id="lg-forgot" type="button" style="background:none;border:none;color:var(--moss-deep);text-decoration:underline;cursor:pointer;font-family:var(--font-body);font-size:12px;padding:0;margin-top:12px;">Mot de passe oublié ?</button>
       <div id="lg-msg" style="font-size:12px;color:var(--rust);margin-top:10px;min-height:16px;">${message || ''}</div>
     </div>`;
   const go = async () => {
     const email = document.getElementById('lg-email').value.trim();
     const password = document.getElementById('lg-pass').value;
     const { error } = await sb.auth.signInWithPassword({ email, password });
-    if (error) document.getElementById('lg-msg').textContent = 'Connexion impossible : ' + error.message;
+    if (error){ const m = document.getElementById('lg-msg'); m.style.color = 'var(--rust)'; m.textContent = 'Connexion impossible : ' + error.message; }
   };
   document.getElementById('lg-btn').onclick = go;
   document.getElementById('lg-pass').onkeydown = ev => { if (ev.key === 'Enter') go(); };
+  document.getElementById('lg-forgot').onclick = async () => {
+    const m = document.getElementById('lg-msg');
+    const email = document.getElementById('lg-email').value.trim();
+    if (!email){ m.style.color = 'var(--rust)'; m.textContent = "Saisis ton email, puis clique sur « Mot de passe oublié ? »."; return; }
+    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin + window.location.pathname });
+    if (error){ m.style.color = 'var(--rust)'; m.textContent = 'Envoi impossible : ' + error.message; return; }
+    m.style.color = 'var(--moss-deep)';
+    m.textContent = "Si un compte existe pour cet email, un lien de réinitialisation vient d'être envoyé.";
+  };
 }
 
 async function startForSession(session){
@@ -656,7 +747,44 @@ async function startForSession(session){
   render();
 }
 
+function renderNewPassword(canCancel){
+  document.getElementById('app').innerHTML = `
+    <div class="panel" style="max-width:340px;margin:80px auto 0;">
+      <h1 style="font-family:var(--font-display);font-size:22px;margin:0 0 4px;">Nouveau mot de passe</h1>
+      <div style="font-size:12px;color:var(--ink-soft);margin-bottom:18px;">8 caractères minimum</div>
+      <div class="field" style="margin-bottom:10px;"><label for="np-1">Nouveau mot de passe</label><input id="np-1" type="password" autocomplete="new-password" style="width:100%;"></div>
+      <div class="field" style="margin-bottom:14px;"><label for="np-2">Confirmer</label><input id="np-2" type="password" autocomplete="new-password" style="width:100%;"></div>
+      <div style="display:flex;gap:10px;">
+        <button id="np-btn" style="background:var(--moss);color:#fff;border:none;border-radius:6px;padding:9px 16px;cursor:pointer;font-family:var(--font-body);flex:1;">Enregistrer</button>
+        ${canCancel ? '<button id="np-cancel" style="background:none;border:1px solid var(--ink);color:var(--ink);border-radius:6px;padding:9px 16px;cursor:pointer;font-family:var(--font-body);">Annuler</button>' : ''}
+      </div>
+      <div id="np-msg" style="font-size:12px;color:var(--rust);margin-top:10px;min-height:16px;"></div>
+    </div>`;
+  const msg = document.getElementById('np-msg');
+  document.getElementById('np-btn').onclick = async () => {
+    const p1 = document.getElementById('np-1').value;
+    const p2 = document.getElementById('np-2').value;
+    if (p1.length < 8){ msg.textContent = 'Le mot de passe doit contenir au moins 8 caractères.'; return; }
+    if (p1 !== p2){ msg.textContent = 'Les deux mots de passe ne correspondent pas.'; return; }
+    const { error } = await sb.auth.updateUser({ password: p1 });
+    if (error){ msg.textContent = 'Modification impossible : ' + error.message; return; }
+    recoveryMode = false;
+    window.history.replaceState(null, '', window.location.pathname);
+    const { data } = await sb.auth.getSession();
+    await startForSession(data.session);
+    const status = document.getElementById('settings-status');
+    if (status){ status.textContent = 'Mot de passe modifié'; setTimeout(() => { status.textContent = ''; }, 4000); }
+  };
+  if (canCancel) document.getElementById('np-cancel').onclick = () => render();
+}
+
 sb.auth.onAuthStateChange((event, session) => {
+  if (event === 'PASSWORD_RECOVERY'){
+    recoveryMode = true;
+    setTimeout(() => renderNewPassword(false), 0);
+    return;
+  }
+  if (recoveryMode && event !== 'SIGNED_OUT') return;
   if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN' || event === 'SIGNED_OUT'){
     // différé pour ne pas bloquer le client Supabase dans son propre callback
     setTimeout(() => startForSession(session), 0);
