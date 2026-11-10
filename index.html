@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Suivi de facturation</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -142,6 +142,54 @@
   .settings button:hover{background:var(--ink);color:var(--paper-card);}
   .settings .status{font-size:12px;color:var(--moss-deep);font-family:var(--font-body);}
   .loading{text-align:center;padding:60px 0;color:var(--ink-soft);font-family:var(--font-mono);font-size:13px;}
+
+  /* ===== Responsive (mobile / iPhone) ===== */
+  html{-webkit-text-size-adjust:100%;}
+  .gauges{display:flex;flex-direction:column;gap:20px;}
+  .gauge-wrap svg{width:100%;max-width:180px;height:auto;}
+  .auth-panel{max-width:340px;margin:80px auto 0;}
+  @media (max-width:640px){
+    body{padding:calc(16px + env(safe-area-inset-top)) calc(12px + env(safe-area-inset-right)) calc(40px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left));}
+    .panel{padding:14px;}
+    .auth-panel{margin-top:32px;}
+    header.top{flex-direction:column;align-items:stretch;gap:12px;margin-bottom:20px;}
+    header.top h1{font-size:22px;}
+    .year-nav{flex-wrap:wrap;gap:8px;}
+    .year-nav button{width:40px;height:40px;}
+    .year-nav .year{flex:1 1 calc(100% - 110px);}
+    .year-nav #change-pwd, .year-nav #logout{flex:1 1 40%;margin-left:0 !important;}
+    .kpi-row{gap:10px;margin-bottom:18px;}
+    .kpi{padding:12px;}
+    .kpi .label{font-size:10px;}
+    .kpi .value{font-size:19px;}
+    .panel-row{gap:16px;margin-bottom:18px;}
+    .gauges{flex-direction:row;gap:12px;}
+    .gauges .panel{flex:1;min-width:0;padding:12px;}
+    .gauge-caption{font-size:11px;}
+    .bars{gap:3px;height:130px;padding:0;}
+    .bar-val,.bar-label{font-size:9px;}
+    .settings{gap:12px;}
+    .settings .field{flex:1 1 140px;}
+    .settings .field:has(#client-input){flex-basis:100%;}
+    .settings .field input, .settings #client-input{width:100% !important;}
+    .settings button{flex:1 1 calc(50% - 6px);min-height:44px;}
+    .settings #save-settings{flex-basis:100%;}
+    .settings .status{width:100%;}
+    .field input, .field select, .days-input, .client-input{font-size:16px;}
+    .field input, .field select{min-height:40px;}
+    /* tableaux empilés en cartes */
+    .stack thead{display:none;}
+    .stack, .stack tbody{display:block;}
+    .stack tr{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;padding:12px;margin-bottom:10px;border:1px solid var(--line);border-radius:8px;background:#fff;}
+    .stack td{display:flex;flex-direction:column;gap:3px;padding:0;border:none;text-align:left !important;font-size:14px;}
+    .stack td[data-label]::before{content:attr(data-label);font-family:var(--font-body);font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--ink-soft);}
+    .stack .days-input, .stack .client-input{width:100%;min-height:40px;}
+    .stack .save-cell button, .stack .extra-cell button{width:100%;min-height:40px;}
+    .ledger td:nth-child(1){grid-column:1 / -1;font-weight:600;text-transform:capitalize;font-size:15px;}
+    .ledger td:nth-child(2){grid-column:1 / -1;}
+    .ledger td:nth-child(6){align-self:end;}
+    .extras-table td:nth-child(5){grid-column:1 / -1;}
+  }
 </style>
 </head>
 <body>
@@ -431,7 +479,7 @@ function openImportModal(parsed){
   const monthOptions = MOIS_LONG.map((m, i) =>
     `<option value="${i}" ${parsed.monthIdx === i ? 'selected' : ''}>${m}</option>`).join('');
   overlay.innerHTML = `
-    <div style="background:var(--paper-card);border:1px solid var(--line);border-radius:var(--radius);padding:20px;width:300px;">
+    <div style="background:var(--paper-card);border:1px solid var(--line);border-radius:var(--radius);padding:20px;width:min(340px,calc(100vw - 32px));max-height:90vh;overflow-y:auto;">
       <h2 style="margin:0 0 14px;font-size:14px;">Confirmer l'import</h2>
       <div class="field" style="margin-bottom:10px;"><label>Mois</label><select id="imp-month" style="width:100%;">${monthOptions}</select></div>
       <div class="field" style="margin-bottom:10px;"><label>Année</label><input id="imp-year" type="number" value="${parsed.year || currentYear}" style="width:100%;"></div>
@@ -522,10 +570,10 @@ function render(){
     return `
       <tr class="${isFuture ? 'future' : ''}" data-idx="${i}">
         <td>${MOIS_LONG[i]}</td>
-        <td class="client-cell"><input class="client-input" type="text" data-month="${i}" value="${(clients[key] || '').replace(/"/g, '&quot;')}" placeholder="—"></td>
-        <td><input class="days-input" type="number" min="0" max="31" step="0.5" value="${v !== null ? v : ''}" data-month="${i}" placeholder="—"></td>
-        <td>${shown ? fmtEUR(caMois) : '—'}${exCa > 0 ? `<div style="font-size:10px;color:var(--ink-soft);">dont ${fmtEUR(exCa)} extra</div>` : ''}</td>
-        <td>${shown ? fmtEUR(cumul) : '—'}</td>
+        <td class="client-cell" data-label="Client"><input class="client-input" type="text" data-month="${i}" value="${(clients[key] || '').replace(/"/g, '&quot;')}" placeholder="—"></td>
+        <td data-label="Jours"><input class="days-input" type="number" min="0" max="31" step="0.5" value="${v !== null ? v : ''}" data-month="${i}" placeholder="—"></td>
+        <td data-label="CA du mois (HT)">${shown ? fmtEUR(caMois) : '—'}${exCa > 0 ? `<div style="font-size:10px;color:var(--ink-soft);">dont ${fmtEUR(exCa)} extra</div>` : ''}</td>
+        <td data-label="CA cumulé (HT)">${shown ? fmtEUR(cumul) : '—'}</td>
         <td class="save-cell"><button data-month="${i}">Enregistrer</button></td>
       </tr>`;
   }).join('');
@@ -534,10 +582,10 @@ function render(){
   const extrasPanel = extrasList.length ? `
     <div class="panel" style="margin-top:24px;">
       <h2>Factures extra ${currentYear}</h2>
-      <table>
+      <table class="stack extras-table">
         <thead><tr><th>Mois</th><th>Client</th><th>Jours</th><th>CA (HT)</th><th></th></tr></thead>
         <tbody>${extrasList.map(x => `
-          <tr><td>${MOIS_LONG[x.month - 1]}</td><td class="client-cell">${esc(x.client) || '—'}</td><td>${x.jours}</td><td>${fmtEUR(x.ca)}</td>
+          <tr><td data-label="Mois">${MOIS_LONG[x.month - 1]}</td><td class="client-cell" data-label="Client">${esc(x.client) || '—'}</td><td data-label="Jours">${x.jours}</td><td data-label="CA (HT)">${fmtEUR(x.ca)}</td>
           <td class="extra-cell"><button class="del-extra" data-id="${esc(x.id)}">Supprimer</button></td></tr>`).join('')}
         </tbody>
       </table>
@@ -603,7 +651,7 @@ function render(){
     </div>
 
     <div class="panel-row">
-      <div style="display:flex;flex-direction:column;gap:20px;">
+      <div class="gauges">
         <div class="panel gauge-wrap">
           <h2 style="align-self:flex-start;">Suivi activité</h2>
           <svg viewBox="0 0 160 100" width="180" height="112">
@@ -635,7 +683,7 @@ function render(){
 
     <div class="panel">
       <h2>Grand livre ${currentYear}</h2>
-      <table>
+      <table class="stack ledger">
         <thead>
           <tr><th>Mois</th><th>Client</th><th>Jours</th><th>CA du mois (HT)</th><th>CA cumulé (HT)</th><th></th></tr>
         </thead>
@@ -711,7 +759,7 @@ function render(){
 
 function renderLogin(message){
   document.getElementById('app').innerHTML = `
-    <div class="panel" style="max-width:340px;margin:80px auto 0;">
+    <div class="panel auth-panel">
       <h1 style="font-family:var(--font-display);font-size:22px;margin:0 0 4px;">Suivi de facturation</h1>
       <div class="sub" style="font-size:12px;color:var(--ink-soft);margin-bottom:18px;">Connexion</div>
       <div class="field" style="margin-bottom:10px;"><label for="lg-email">Email</label><input id="lg-email" type="email" autocomplete="username" style="width:100%;"></div>
@@ -749,7 +797,7 @@ async function startForSession(session){
 
 function renderNewPassword(canCancel){
   document.getElementById('app').innerHTML = `
-    <div class="panel" style="max-width:340px;margin:80px auto 0;">
+    <div class="panel auth-panel">
       <h1 style="font-family:var(--font-display);font-size:22px;margin:0 0 4px;">Nouveau mot de passe</h1>
       <div style="font-size:12px;color:var(--ink-soft);margin-bottom:18px;">8 caractères minimum</div>
       <div class="field" style="margin-bottom:10px;"><label for="np-1">Nouveau mot de passe</label><input id="np-1" type="password" autocomplete="new-password" style="width:100%;"></div>
